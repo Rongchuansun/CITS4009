@@ -1,0 +1,560 @@
+---
+title: Influencing factors and performance of YouTuber
+output: html_document
+#runtime: shiny
+---
+
+```{=html}
+<style>
+h1, h2, h3, h4, h5, h6 {
+    color: #000080;
+}
+</style>
+```
+## **Name: Rongchuan Sun (23715251)**
+
+## **The shinny app video link**: <https://youtu.be/rw1NQErea50>
+
+## **Dataset introduction**
+
+We use the [Global YouTube Statistics 2023 dataset]{style="color:#000080"}, which can be obtained from [kaggle.com](https://www.kaggle.com/), collected by Nidula Elgiriyewithana
+
+## Setup
+
+[Import required packages and datasets]{style="color:#000080"}
+
+```{r}
+library(knitr)
+library(maps)
+library(broom)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+data <- read.csv("Global YouTube Statistics 2023 dataset.csv")
+```
+
+## Data Cleaning and Transformation
+
+[Examine the dataset structure]{style="color:#000080"}
+
+```{r}
+str(data)
+summary(data)
+head(data)
+```
+
+The dataset encompasses 995 data points, spanning 28 distinct attributes.
+
+Each illustrating attributes related to popular YouTube channels, including their rank, subscriber count, video views, and regional specifics.
+
+Notably, each YouTube channel is uniquely identified by the 'YouTuber' attribute, and its performance metrics are captured through 'subscribers', 'uploads', and 'video.views'.
+
+The 'category' column suggests the niche or domain of content, while 'Country' hints at the geographical origin of the YouTuber, which can be critical in understanding regional trends and preferences.
+
+Economic indicators like 'lowest_monthly_earnings' and 'highest_monthly_earnings' shed light on the potential revenue streams for these YouTubers.
+
+Some columns contain missing data, represented by 'NA', which might require attention during analysis, especially in attributes like 'video_views_rank', 'country_rank', and 'created_year'.
+
+[Addressing Data Anomalies and Extremes]{style="color:#000080"}
+
+```{r}
+clean_data <- function(column) {
+  if (is.numeric(column)) {
+    column[is.nan(column)] <- NA
+  }
+   if (is.character(column)) {
+    column[column == "nan"] <- NA
+  }
+  return(column)
+}
+
+data[] <- lapply(data, clean_data)
+cols_with_zeros <- c("video.views", "lowest_monthly_earnings", "highest_monthly_earnings", 
+                     "lowest_yearly_earnings", "highest_yearly_earnings")
+
+for (col in cols_with_zeros) {
+  data[[col]][data[[col]] == 0] <- NA
+}
+
+```
+
+The code first iterates through each column in the dataset to identify and handle missing values.
+
+For numeric columns, the code checks for NaN (Not a Number) type data and replaces it with NA to ensure consistent identification of missing values in R.
+
+For character columns, the code identifies all values labeled as "nan" and replaces them with NA.
+
+Additionally, the code replaces zero values in columns such as video views, monthly minimum returns, monthly maximum returns, yearly minimum returns, and yearly maximum returns with NA.
+
+In this context, zeros could be considered as missing or inaccurate data. This treatment ensures that all missing values in the dataset are uniformly represented as NA, providing a clearer and more accurate foundation for subsequent analysis.
+
+[Imputing NA Values]{style="color:#000080"}
+
+```{r}
+cols_to_fill <- c("video.views", "lowest_monthly_earnings", 
+                  "highest_monthly_earnings", "lowest_yearly_earnings", 
+                  "highest_yearly_earnings", "video_views_for_the_last_30_days", "subscribers_for_last_30_days")
+
+data <- data %>%
+  group_by(Country, channel_type) %>%
+  mutate(across(all_of(cols_to_fill), 
+                ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
+  ungroup()
+
+for (col in cols_to_fill) {
+  data <- data %>%
+    group_by(channel_type) %>%
+    mutate_at(vars(col), ~ ifelse(is.na(.) & !is.na(channel_type), 
+                                  mean(., na.rm = TRUE), .)) %>%
+    ungroup()
+}
+
+for (col in cols_to_fill) {
+  data <- data %>%
+    group_by(Country) %>%
+    mutate_at(vars(col), ~ ifelse(is.na(.) & !is.na(Country), 
+                                  mean(., na.rm = TRUE), .)) %>%
+    ungroup()
+}
+```
+
+Firstly, we specify the target columns for which we intend to perform NA value imputation: video views, minimum monthly income, maximum monthly income, minimum yearly income, and maximum yearly income.
+
+Subsequently, we conduct missing value imputation for the specified columns based on the combination of "Country" and "channel_type." We utilize the respective means within each combination to perform the imputation.
+
+If a particular record has a missing value in the "channel_type" column, we exclusively use the data corresponding to the associated "Country" to fill in the missing value for that record. Conversely, if the "Country" column has missing values, we solely rely on the data corresponding to the "channel_type" to perform the imputation.
+
+This incremental approach ensures that missing values within the data are substituted with the appropriate mean under specific conditions.
+
+```{r}
+data <- data %>%
+  mutate(Country = case_when(
+    Country == "United States" ~ "USA",
+    Country == "United Kingdom" ~ "UK",
+    TRUE ~ Country
+  ))
+```
+
+[Present the Count of Missing Values in Each Column After Processing]{style="color:#000080"}
+
+```{r}
+na_count <- apply(data, 2, function(x) sum(is.na(x)))
+na_count
+```
+
+##Data Exploration [Exploring the relationship between various numerical variables]{style="color:#000080"}
+
+```{r}
+numerical_cols <- c('subscribers', 'video.views', 'uploads', 
+                    'lowest_monthly_earnings', 'highest_monthly_earnings', 
+                    'lowest_yearly_earnings', 'highest_yearly_earnings',
+                    'video_views_for_the_last_30_days', 'subscribers_for_last_30_days')
+
+for (col in numerical_cols) {
+    data[[col]][is.na(data[[col]])] <- mean(data[[col]], na.rm = TRUE)
+}
+correlation_matrix <- cor(data[, numerical_cols])
+correlation_matrix
+
+melted_correlation <- melt(correlation_matrix)
+my_palette <- scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
+heatmap <- ggplot(data = melted_correlation, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() + 
+  my_palette +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  labs(title="Correlation Heatmap", fill="Correlation")
+heatmap
+```
+
+Identify a set of numeric columns, including: subscribers count, video views, uploads count, minimum monthly income, maximum monthly income, minimum yearly income, maximum yearly income, video views in the last 30 days, and subscribers increase in the last 30 days.
+
+Perform a secondary round of imputation for missing values.
+
+Provide a heatmap illustrating pairwise correlations. From the heatmap, we can observe areas where the color is deep red, indicating strong correlation between two variables. White sections represent lack of correlation. For instance, there is a strong correlation between video views and subscribers, while uploads and subscribers exhibit minimal correlation.
+
+[video.views vs. subscribers]{style="color:#000080"}
+
+```{r}
+ggplot(data, aes(x=subscribers, y=video.views)) + 
+  geom_point(color="skyblue") +  
+  ggtitle("Scatter Plot of video.views vs. subscribers") + 
+  geom_smooth(se=FALSE, color='blue') +
+  xlab("Subscribers") + 
+  ylab("Video Views") +
+  xlim(c(0, 1.5e+08)) +  
+  ylim(c(0, 1.0e+11)) 
+```
+
+The scatter plot and the trend of the fitted curve clearly demonstrate that as the number of subscribers increases, there is a corresponding increase in video views. Similarly, the reverse is also true. These two variables reinforce each other's relationship, indicating a strong positive correlation between them.
+
+[Earnings vs. Subscribers]{style="color:#000080"}
+
+```{r}
+bins <- c(0, 15000000, 18000000, 25000000, 245000000) 
+labels <- c("0-15M", "15M-18M", "18M-25M", "25M+")  
+data$subscriber_group <- cut(data$subscribers, breaks=bins, labels=labels, include.lowest = TRUE)
+
+p <- ggplot(data, aes(x=subscribers)) +
+  geom_line(aes(y=lowest_monthly_earnings, color="Lowest Monthly Earnings")) +
+  geom_line(aes(y=highest_monthly_earnings, color="Highest Monthly Earnings")) +
+  geom_line(aes(y=lowest_yearly_earnings, color="Lowest Yearly Earnings")) +
+  geom_line(aes(y=highest_yearly_earnings, color="Highest Yearly Earnings")) +
+  labs(title="Earnings vs. Subscribers", x="Subscribers", y="Earnings") +
+  theme_minimal() +
+  facet_wrap(~subscriber_group, scales = "free_x", ncol=1) 
+p
+```
+
+Upon stratifying the Subscribers' count, we observe variations in the trends of all four types of income within each stratum. Notably, across the four strata, income exhibits continuous fluctuations with distinct peaks. Particularly evident is the increased frequency of these income peaks as the Subscribers' count rises. This observation suggests a strong correlation between Subscribers and income within certain categories, while this correlation might be absent in others. To delve deeper, we can further categorize the YouTubers based on their content genres.
+
+[Earnings by Subscribers and Category]{style="color:#000080"}
+
+```{r}
+plot_category <- function(data, categories) {
+  data_filtered <- data %>%
+    filter(category %in% categories)
+
+  bins <- c(0, 15000000, 18000000, 25000000, 245000000)
+  labels <- c("0-15M", "15M-18M", "18M-25M", "25M+")
+  data_filtered$subscriber_group <- cut(data_filtered$subscribers, 
+                                        breaks=bins, 
+                                        labels=labels, 
+                                        include.lowest = TRUE)
+
+  p <- ggplot(data_filtered, aes(x=subscribers)) +
+    geom_line(aes(y=lowest_monthly_earnings, color="Lowest Monthly Earnings"), na.rm = TRUE) +
+    geom_line(aes(y=highest_monthly_earnings, color="Highest Monthly Earnings"), na.rm = TRUE) +
+    geom_line(aes(y=lowest_yearly_earnings, color="Lowest Yearly Earnings"), na.rm = TRUE) +
+    geom_line(aes(y=highest_yearly_earnings, color="Highest Yearly Earnings"), na.rm = TRUE) +
+    labs(title="Earnings vs. Subscribers", x="Subscribers", y="Earnings") +
+    theme_minimal() +
+    facet_wrap(~category, scales = "free_x", ncol=1)
+  
+  return(p)
+}
+
+p <- plot_category(data, c("Music", "Howto & Style"))
+p
+```
+
+Upon further segmentation, we discern that certain content categories exhibit a robust correlation between Subscribers and income. For instance, genres like Music showcase a positive correlation, wherein income escalates with an increasing Subscribers' count. Conversely, in categories like Howto & Style, this correlation is absent. This elucidates the recurring income fluctuations and the presence of higher peaks in all four strata. Notably, as the Subscribers' count rises, the frequency of income peaks augments.
+
+[Youtuber geographical distribution]{style="color:#000080"}
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+youtuber_count <- data.frame(Country = names(table(data$Country)), Count = as.numeric(table(data$Country)))
+
+world_data <- left_join(world, youtuber_count, by = c("sovereignt" = "Country"))
+world_data$Count[is.na(world_data$Count)] <- 0
+
+ggplot(data = world_data) +
+  geom_sf(aes(fill = Count)) +
+  scale_fill_gradient(low = "white", high = "blue", name = "Number of Youtubers") +
+  theme_minimal() +
+  labs(title = "Distribution of Youtubers by Country")
+```
+
+Upon partitioning YouTubers by geographical location, we observe that the largest number of YouTubers are situated in the United States and India.
+
+[Youtuber geographical distribution by Rank]{style="color:#000080"}
+
+```{r}
+library(leaflet)
+library(dplyr)
+library(htmltools)
+
+plot_map_for_rank <- function(rank_start, rank_end, title) {
+  
+  subset_data <- data %>%
+    filter(rank >= rank_start & rank <= rank_end)
+  
+  country_counts <- subset_data %>%
+    group_by(Country) %>%
+    summarise(
+      count = n(),
+      avgLat = mean(Latitude, na.rm = TRUE),
+      avgLong = mean(Longitude, na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  map <- leaflet() %>%
+    addTiles() %>%
+    addCircleMarkers(
+      data = country_counts, 
+      lng = ~avgLong, 
+      lat = ~avgLat, 
+      weight = 1, 
+      radius = ~sqrt(count) * 3,
+      fillColor = "blue", 
+      fillOpacity = 0.5,
+      popup = ~paste(Country, ": ", count, " YouTubers")
+    ) %>%
+    addControl(
+      html = tags$div(tags$h4(title)),
+      position = "topright"
+    )
+  return (map)
+}
+
+map1 <- plot_map_for_rank(1, 332, "Youtubers geographical distribution in High Rank")
+map2 <- plot_map_for_rank(333, 666, "Youtubers geographical distribution in Mid Rank")
+map3 <- plot_map_for_rank(667, 995, "Youtubers geographical distribution in Low Rank")
+
+map1
+map2
+map3
+```
+
+3 ranking range of Youtuber, we can find that no matter how we change the specified range, the United States and India are the countries with the most Youtube distribution. In general, the United States, India, Brazil, and the United Kingdom are the top four countries for Youtube distribution.
+
+<span style="color:#000080">United State vs India vs Brazil vs United Kingdom<span>
+
+```{r}
+country_sums <- data %>% 
+  group_by(Country) %>% 
+  summarise(Total_Subscribers = sum(subscribers, na.rm = TRUE),
+            Total_Views = sum(video.views, na.rm = TRUE)) %>% 
+  filter(Country %in% c("USA", "India", "Brazil", "UK"))
+
+
+global_sums <- data %>%
+  summarise(Global_Total_Subscribers = sum(subscribers, na.rm = TRUE),
+            Global_Total_Views = sum(video.views, na.rm = TRUE))
+
+country_sums$Subscribers_Percentage <- (country_sums$Total_Subscribers / global_sums$Global_Total_Subscribers) * 100
+country_sums$Views_Percentage <- (country_sums$Total_Views / global_sums$Global_Total_Views) * 100
+
+long_country_sums <- country_sums %>%
+  select(Country, Subscribers_Percentage, Views_Percentage) %>%
+  tidyr::pivot_longer(cols = c(Subscribers_Percentage, Views_Percentage),
+                      names_to = "Metric", 
+                      values_to = "Value")
+
+library(ggplot2)
+
+ggplot(long_country_sums, aes(x = Country, y = Value, fill = Metric)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(title = "Percentage of Total Subscribers and Video Views by Country",
+       x = "Country", y = "Percentage") +
+  theme_minimal() +
+  scale_fill_manual(values = c("skyblue", "grey"))
+
+```
+
+Select the top four countries with the most Youtubers, and we can find that the sum of their subscribers and views accounts for nearly 50% of the total. Among them, the United States and India are the countries with the largest number of subscribers and views
+
+[Youtuber Channel Type Distribution]{style="color:#000080"}
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(gridExtra) 
+
+selected_countries <- c("USA", "UK", "India", "Brazil")
+filtered_data <- data %>% 
+  filter(Country %in% selected_countries) %>%
+  group_by(Country, channel_type) %>%
+  summarise(n = n())
+
+plot_list <- lapply(selected_countries, function(country) {
+  country_data <- dplyr::filter(filtered_data, Country == country)
+  
+  p <- ggplot(country_data, aes(x = "", y = n, fill = channel_type)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    labs(title = paste(country),
+         fill = "Channel Type")
+  return(p)
+})
+
+do.call(grid.arrange, plot_list)
+```
+
+Select 4 different countries to get a distribution pie chart of Youtuber categories
+
+We can find that most national entertainment channels and music channels have the most Youtubers
+
+Guess if music and entertainment also have the most subscribers？
+
+[Distribution of Subscribers by Category Distribution]{style="color:#000080"}
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+createViolinPlot <- function(data, y_column, y_label, title_text, y_limit_upper) {
+  
+  plot <- ggplot(data, aes(x = channel_type, y = .data[[y_column]], fill = channel_type)) +
+    geom_violin() +
+    labs(title = title_text,
+         y = y_label, x = "Category") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.position = "none") +
+    coord_cartesian(ylim = c(0, y_limit_upper))
+  
+  return(plot)
+}
+
+
+p1 <- createViolinPlot(data, "subscribers", "Number of Subscribers", "Distribution of Subscribers by Category", 1.0e+08)
+p2 <- createViolinPlot(data, "video.views", "Number of Video Views", "Distribution of Video Views by Category", 7.5e+10)
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+From the violin graph, it can be found that the average values of these two categories are not much higher than those of the others, but there are too many outliers in these two categories. The number of certain youtubers who subscribe to these two channels is particularly large, which drives the entire number of subscriptions
+
+[Youtuber Channel Type Prediction]{style="color:#000080"}
+
+```{r}
+freq_table <- table(data$created_year, data$channel_type)
+df <- as.data.frame(as.table(freq_table))
+colnames(df) <- c("Year", "Channel_Type", "Count")
+df <- df[!is.na(df$Year), ]
+df$Year <- as.numeric(as.character(df$Year))
+
+predictions <- list()
+for (channel in unique(df$Channel_Type)) {
+  subset_data <- df[df$Channel_Type == channel,]
+  model <- lm(Count ~ Year, data=subset_data)
+  future_years <- (max(subset_data$Year, na.rm = TRUE) + 1):(max(subset_data$Year, na.rm = TRUE) + 5)
+  predicted_counts <- predict(model, newdata=data.frame(Year=future_years))
+  predictions[[channel]] <- data.frame(Year=future_years, Channel_Type=channel, Count=predicted_counts)
+}
+
+predicted_df <- do.call(rbind, predictions)
+combined_data <- rbind(df, predicted_df)
+ggplot(combined_data, aes(x = as.factor(Year), y = Count, fill = Channel_Type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Number of Youtubers Over Time by Channel Type",
+       x = "Year",
+       y = "Number of Youtubers") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(size = 7, angle = 45, hjust = 1)) 
+```
+
+By analyzing the yearly count of channel creations across various categories, we can extrapolate and predict the yearly count of YouTuber creations for each channel category over the next five years. This projection allows us to infer the developmental trajectory of different channel categories.
+
+It can be seen that the number of youtubers on entertainment channels, music channels and people channels will continue to increase steadily in the next five years
+
+# Shiny Part
+
+```{r}
+library(shiny)
+library(shinythemes)
+library(ggplot2)
+library(leaflet)
+library(dplyr)
+
+ui <- navbarPage(
+  title = "YouTube Data Analysis",
+  theme = shinytheme("cerulean"),
+  
+  tabPanel("Subscribers vs Uploads Analysis",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("category", 
+                           label = "Choose a Category:", 
+                           choices = unique(data$category))
+             ),
+             mainPanel(
+               plotOutput("categoryPlot")
+             )
+           )),
+  
+  tabPanel("YouTuber Distribution by Rank",
+           sidebarLayout(
+             sidebarPanel(
+               sliderInput("rankRange", "Select Rank Range:", 
+                           min = 1, max = 995, value = c(1, 995))
+             ),
+             mainPanel(
+               leafletOutput("interactiveMapRank")
+             )
+           )),
+  
+  tabPanel("Youtuber Channel Type Distribution",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("selectedCountry", 
+                           label = "Choose a country:",
+                           choices = unique(data$Country),
+                           selected = unique(data$Country)[1])
+             ),
+             mainPanel(
+               plotOutput("pieChart")
+             )
+           ))
+)
+
+server <- function(input, output) {
+  output$categoryPlot <- renderPlot({
+    df <- data %>%
+      filter(category == input$category)
+    
+    ggplot(df, aes(x = uploads, y = subscribers)) +
+      geom_line(aes(group = 1), color = "blue") +  
+      labs(title = paste("Subscribers vs Uploads for", input$category),
+           x = "Number of Uploads",
+           y = "Number of Subscribers") +
+      theme_light() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
+  
+    output$interactiveMapRank <- renderLeaflet({
+    
+    subset_data <- data %>%
+      filter(rank >= input$rankRange[1] & rank <= input$rankRange[2])
+    
+    country_counts <- subset_data %>%
+      group_by(Country) %>%
+      summarise(
+        count = n(),
+        avgLat = mean(Latitude, na.rm = TRUE),
+        avgLong = mean(Longitude, na.rm = TRUE)
+      ) %>%
+      ungroup()
+    
+    leaflet() %>%
+      addTiles() %>%
+      addCircleMarkers(
+        data = country_counts, 
+        lng = ~avgLong, 
+        lat = ~avgLat, 
+        weight = 1, 
+        radius = ~sqrt(count) * 3,
+        fillColor = "blue", 
+        fillOpacity = 0.5,
+        popup = ~paste(Country, ": ", count, " YouTubers")
+      )
+  })
+  
+  output$pieChart <- renderPlot({
+    selected_data <- dplyr::filter(data, Country == input$selectedCountry)
+    
+    channel_count <- selected_data %>% 
+      group_by(channel_type) %>%
+      summarise(n = n())
+    
+    ggplot(channel_count, aes(x = "", y = n, fill = channel_type)) +
+      geom_bar(stat = "identity", width = 1) +
+      coord_polar(theta = "y") +
+      labs(title = paste("Youtuber Channel Type Distribution in", input$selectedCountry),
+           fill = "Channel Type")
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```

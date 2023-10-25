@@ -1,0 +1,729 @@
+---
+title: "CITS4009 Project 2"
+author: 
+  - "Rongchuan Sun-23715251(50%)-all tasks"
+  - "Ziqi Wang-23665044(50%)-all tasks"
+---
+
+[click this link to watch video](https://youtu.be/wWfrgM3npH8)
+
+...
+```{=html}
+<style>
+h1, h2, h3, h4, h5, h6 {
+    color: #000080;
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+There are a lot of digital platforms changing the way we consume and interact with content. Among these platforms, YouTube stands out as a significant player, hosting millions of videos and serving billions of views each day. This vast amount of data provides an exciting opportunity for data-driven insights and predictive modeling. In this study, we explored the YouTube dataset with patterns and relationships that could potentially influence video views.
+
+Load libraries
+
+```{r lib, echo=TRUE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(ROCR)
+library(knitr)
+library(rpart)
+library(rpart.plot)
+library(pander)
+library(ROCit)
+library(grid)
+library(gridExtra)
+library(grDevices)
+library(fpc)
+library(ggpubr)
+library(factoextra)
+library(readxl)
+```
+
+Load the dataset
+
+```{r input}
+youtube <- read.csv('Global YouTube Statistics.csv')
+```
+
+## 1.Data preparation
+
+### Choose the response variable
+
+The response variable is the number of video views for the last 30 days. It is numeric data in the raw dataset. For this study we decided to change it into binary data. First, we checked the basic characteristics of the variable. We found that there were 56 missing values so we excluded them from our dataset. To handle the na value, we replace them with medium. And also to handle the outliers, we define top x% and bottom x% as outlier.For each factors, the value of x is different. we replace them with medium as well. Then we checked the histogram of the variable. The histogram shows that the majority of videos have views less than 1e+09. The distribution has a long tail to the right, indicating that there are fewer videos with a very high number of views. So we considered that the high views is more than 80 million. On contrary, low view is less than 80 millions
+
+```{r prep}
+
+summary(youtube$video_views_for_the_last_30_days)     #there are 56 NAs
+youtube <-filter(youtube, !is.na(video_views_for_the_last_30_days))   #excluding NAs
+
+# replace NA with "other" for category and channel_type columns
+youtube$category[is.na(youtube$category)] <- "Other"
+youtube$channel_type[is.na(youtube$channel_type)] <- "Other"
+
+# replace nan with other" category and channel_type columns
+youtube$category[youtube$category == "nan"] <- "Other"
+youtube$channel_type[youtube$channel_type == "nan"] <- "Other"
+
+# calculate the median of subscribers_for_last_30_days
+median_value <- median(youtube$subscribers_for_last_30_days, na.rm = TRUE)
+
+# replace NaN with the median
+youtube$subscribers_for_last_30_days[youtube$subscribers_for_last_30_days == "NaN"] <- median_value
+
+replaceTopBottomOutliers <- function(data, column, lower_percentile, upper_percentile) {
+  # Calculate the quantiles for the specified column
+  thresholds <- quantile(data[[column]], probs = c(lower_percentile, upper_percentile), na.rm = TRUE)
+  
+  # Replace values in the specified column that are above the upper threshold
+  data[[column]][data[[column]] > thresholds[2]] <- median(data[[column]], na.rm = TRUE)
+  
+  # Replace values in the specified column that are below the lower threshold
+  data[[column]][data[[column]] < thresholds[1]] <- median(data[[column]], na.rm = TRUE)
+  cat("Min after ETL:", min(data[[column]], na.rm = TRUE), "\n")
+  cat("Max after ETL:", max(data[[column]], na.rm = TRUE), "\n")
+  return(data)
+}
+
+# Example usage:
+youtube <- replaceTopBottomOutliers(youtube, "highest_monthly_earnings", 0.25, 0.8)
+youtube <- replaceTopBottomOutliers(youtube, "lowest_monthly_earnings", 0.2, 0.8)
+youtube <- replaceTopBottomOutliers(youtube, "highest_yearly_earnings", 0.25, 0.8)
+youtube <- replaceTopBottomOutliers(youtube, "lowest_yearly_earnings", 0.2, 0.75)
+youtube <- replaceTopBottomOutliers(youtube, "uploads", 0.1, 1)
+youtube <- replaceTopBottomOutliers(youtube, "subscribers", 0, 1)
+youtube <- replaceTopBottomOutliers(youtube, "video.views", 0.04, 1)
+youtube <- replaceTopBottomOutliers(youtube, "subscribers_for_last_30_days", 0.2, 0.9)
+youtube <- replaceTopBottomOutliers(youtube, "created_date", 0.1, 0.9)
+
+youtube$vv <- ifelse(youtube$video_views_for_the_last_30_days > 80000000, 1, 0)   #1 for hige video views, 2 for low video views
+table(youtube$vv)
+
+```
+
+This figure is a histogram representing the distribution of video views for the last 30 days.The histogram shows that the majority of videos have view counts close to 0, with the frequency gradually decreasing as the number of views increases. This indicates that only a small proportion of videos achieve a very high number of views, while most videos only have lower number of views.
+
+```{r hist, echo=TRUE}
+hist(youtube$video_views_for_the_last_30_days, breaks = 200,
+     xlab = 'video views for the last 30 days', main = 'Histogram of video views for the last 30 days')
+```
+
+### Selecting variables
+
+Since there is only the information of year, month and date about when the channels were established, it becomes necessary to compute the duration of their existence. Therefore, we have calculated the total number of days from the inception of each channel until October 20, 2023. This gives us a measure of the 'age' of each channel, which could be a significant factor in subsequent analyses.
+
+```{r time}
+youtube$created <- as.POSIXct("2023-10-20") 
+year(youtube$created) <- as.integer(youtube$created_year)
+youtube$created_month <- as.factor(youtube$created_month)
+youtube$created_month <- factor(youtube$created_month, levels = c('Jan', 'Feb', 'Mar',
+                                                                  'Apr', 'May', 'Jun',
+                                                                  'Jul', 'Aug', 'Sep',
+                                                                  'Oct', 'Nov', 'Dec'), 
+                                labels = c('01', '02', '03', '04', '05', '06',
+                                           '07', '08', '09', '10', '11', '12'))
+month(youtube$created) <- as.integer(youtube$created_month)
+mday(youtube$created) <- as.integer(youtube$created_date)       #combine year, month and day
+youtube$created_time <- as.POSIXct("2023-10-20") - youtube$created      #calculate total opening days
+youtube$created_time <- as.numeric(youtube$created_time)      
+```
+
+We calculated the correlation coefficients between video views for the last 30 days and other variables. We choose some "candidate" columns as predictors. To generate two combinations of attributes for further classifiers, we combine the results of correlation to categorize the predictor variables into channel metrics data and earnings estimates data. Channel metrics data including 'subscribers', 'uploads', 'channel_type' and 'created_time'. Earnings estimates data including 'lowest_yearly_earnings', 'video.views', 'subscribers_30' and 'category'.
+
+```{r select}
+youtube <- rename(youtube, subscribers_30 = 'subscribers_for_last_30_days',
+                  edu = 'Gross.tertiary.education.enrollment....')      #rename column names
+Vars <- c('subscribers', 'video.views', 'uploads', 'video_views_rank',
+          'country_rank', 'channel_type_rank','lowest_monthly_earnings',
+          'highest_monthly_earnings', 'lowest_yearly_earnings',
+          'highest_yearly_earnings', 'subscribers_30', 'edu', 'Population', 
+          'Unemployment.rate', 'created_time')
+correlation <- cor(youtube$video_views_for_the_last_30_days, youtube[, Vars], use = 'pairwise.complete.obs')
+correlation[, order(correlation, decreasing = T)]
+candidate.columns <- c('subscribers', 'video.views', 'category', 'uploads', 
+                       'channel_type', 'lowest_monthly_earnings',
+                       'highest_monthly_earnings', 'lowest_yearly_earnings', 
+                       'highest_yearly_earnings', 'subscribers_30', 'created_time')
+predict1.columns <- c('subscribers', 'uploads', 'channel_type', 'created_time')
+predict2.columns <- c('lowest_yearly_earnings', 'video.views', 'subscribers_30', 'category')
+outcome <- 'vv'
+youtube <- youtube[, c(outcome, candidate.columns)]
+```
+
+Splitting the data into Categorical and numerical variables.
+
+```{r split cat and num}
+catVars <- candidate.columns[sapply(youtube[,candidate.columns],class) %in% c('factor','character')]
+numericVars <- candidate.columns[sapply(youtube[,candidate.columns],class) %in% c('numeric','integer')]
+```
+
+### Splitting the data into training and testing datasets
+
+```{r split}
+set.seed(9924)
+youtube$rgroup <- runif(dim(youtube)[1])
+TrainAll <- subset(youtube, rgroup<=0.9)
+Test <- subset(youtube, rgroup>0.9)     #split datasets into a training set and a test set
+
+useForCal <- rbinom(n=dim(TrainAll)[1], size=1, prob=0.1)>0
+Cal <- subset(TrainAll, useForCal)
+Train <- subset(TrainAll, !useForCal)     #split TrainAll into a training set and a calibration set
+```
+
+### Single variable classification
+
+```{r categorical}
+pos <- '1'
+
+mkPredC <- function(outCol, varCol, appCol) {
+pPos <- sum(outCol == pos) / length(outCol)
+naTab <- table(as.factor(outCol[is.na(varCol)]))
+pPosWna <- (naTab/sum(naTab))[pos]
+vTab <- table(as.factor(outCol), varCol)
+pPosWv <- (vTab[pos, ] + 1.0e-3*pPos) / (colSums(vTab) + 1.0e-3)
+pred <- pPosWv[appCol]
+pred[is.na(appCol)] <- pPosWna
+pred[is.na(pred)] <- pPos
+pred
+}             #function to repeat model building
+
+for(v in catVars) {
+pi <- paste('pred', v, sep='')
+Train[,pi] <- mkPredC(Train[,outcome], Train[,v], Train[,v])
+Cal[,pi] <- mkPredC(Train[,outcome], Train[,v], Cal[,v])
+Test[,pi] <- mkPredC(Train[,outcome], Train[,v], Test[,v])
+}             #predict for all categorical variables
+```
+
+Evaluate AUC for the single-variable models (categorical).
+
+```{r cat auc}
+calcAUC <- function(predcol,outcol) {
+perf <- performance(prediction(predcol,outcol==pos),'auc')
+as.numeric(perf@y.values)
+}
+
+for(v in catVars) {
+pi <- paste('pred', v, sep='')
+aucTrain <- calcAUC(Train[,pi], Train[,outcome])
+if (aucTrain >= 0.5) {
+aucCal <- calcAUC(Cal[,pi], Cal[,outcome])
+print(sprintf(
+"%s: trainAUC: %4.3f; calibrationAUC: %4.3f",
+pi, aucTrain, aucCal))
+}
+}
+```
+
+Evaluate AUC for the single-variable models (numerical).
+
+```{r numeric}
+mkPredN <- function(outCol, varCol, appCol) {
+cuts <- unique(
+quantile(varCol, probs=seq(0, 1, 0.1), na.rm=T))
+varC <- cut(varCol,cuts)
+appC <- cut(appCol,cuts)
+mkPredC(outCol,varC,appC)
+}
+
+for(v in numericVars) {
+pi <- paste('pred', v, sep='')
+Train[,pi] <- mkPredN(Train[,outcome], Train[,v], Train[,v])
+Cal[,pi] <- mkPredN(Train[,outcome], Train[,v], Cal[,v])
+Test[,pi] <- mkPredN(Train[,outcome], Train[,v], Test[,v])
+aucTrain <- calcAUC(Train[,pi], Train[,outcome])
+if(aucTrain >= 0.5) {
+aucCal <- calcAUC(Cal[,pi], Cal[,outcome])
+print(sprintf(
+"%s: trainAUC: %4.3f; calibrationAUC: %4.3f",
+pi, aucTrain, aucCal))
+}
+}
+```
+
+Then we showed the results in one table.
+
+```{r combin}
+all.vars <- c(catVars, numericVars)
+models.auc <- data.frame(model.type = 'univariate',
+                         model.name = all.vars,
+                         train.auc = sapply(all.vars, function(v){pi <- paste('pred',v,sep=''); 
+                         calcAUC(Train[,pi], Train[,outcome])}),
+                         cal.auc = sapply(all.vars, function(v){pi <- paste('pred',v,sep=''); 
+                         calcAUC(Cal[,pi],Cal[,outcome])}))
+kable(models.auc[order(-models.auc$cal.auc), ])
+```
+
+Upon examining the list of single variables, it becomes apparent that there are some variables that show promise. For example, the four kinds of earnings and video views stand out with all their training and calibration AUCs scoring above 0.8. Besides, variables "subscribers_30", "channel_type", "category", "subscribers" and "uploads" are with their AUCs scoring above 0.6.
+
+Perform feature selection with log likelihood
+
+```{r log like}
+logLikelihood <- function(ytrue, ypred, epsilon=1e-6) {
+sum(ifelse(ytrue==pos, log(ypred+epsilon), log(1-ypred-epsilon)), na.rm=T)
+}
+
+logNull <- logLikelihood(
+Cal[,outcome], sum(Cal[,outcome]==pos)/nrow(Cal)
+)
+cat(logNull)
+```
+
+```{r ll cat}
+selCatVars <- c()
+minDrop <- 1
+for (v in catVars) {
+pi <- paste('pred', v, sep='')
+devDrop <- 2*(logLikelihood(Cal[,outcome], Cal[,pi]) - logNull)
+if (devDrop >= minDrop) {
+print(sprintf("%s, deviance reduction: %g", pi, devDrop))
+selCatVars <- c(selCatVars, pi)
+}
+}
+```
+
+For the numerical variable, highest_monthly_earnings is the highest, giving a drop of 61.3616 for the deviance. From the above result, highest_yearly_earnings gave an AUC of 0.88 which was also the highest in the list.
+
+```{r ll num}
+selNumVars <- c()
+minDrop <- 1
+for (v in numericVars) {
+pi <- paste('pred', v, sep='')
+devDrop <- 2*(logLikelihood(Cal[,outcome], Cal[,pi]) - logNull)
+if (devDrop >= minDrop) {
+print(sprintf("%s, deviance reduction: %g", pi, devDrop))
+selNumVars <- c(selNumVars, pi)
+}
+}
+```
+
+## 2.Classification
+
+The function below has been created for performance measures of the different models.
+
+```{r performance}
+logLikelihood <- function(ytrue, ypred, epsilon=1e-6) {
+sum(ifelse(ytrue, log(ypred+epsilon), log(1-ypred+epsilon)), na.rm=T)
+}
+
+performanceMeasures <- function(ytrue, ypred, model.name = "model", threshold=0.5) {
+dev.norm <- -2 * logLikelihood(ytrue, ypred)/length(ypred)
+cmat <- table(actual = ytrue, predicted = ypred >= threshold)
+accuracy <- sum(diag(cmat)) / sum(cmat)
+precision <- cmat[2, 2] / sum(cmat[, 2])
+recall <- cmat[2, 2] / sum(cmat[2, ])
+f1 <- 2 * precision * recall / (precision + recall)
+data.frame(model = model.name, precision = precision,
+recall = recall, f1 = f1, dev.norm = dev.norm)
+}
+
+panderOpt <- function(){
+panderOptions("plain.ascii", TRUE)
+panderOptions("keep.trailing.zeros", TRUE)
+panderOptions("table.style", "simple")
+}
+
+pretty_perf_table <- function(model, xtrain, ytrain,
+xtest, ytest, threshold=0.5) {
+panderOpt()
+perf_justify <- "lrrrr"
+pred_train <- predict(model, newdata=xtrain)
+pred_test <- predict(model, newdata=xtest)
+trainperf_df <- performanceMeasures(
+ytrain, pred_train, model.name="training", threshold=threshold)
+testperf_df <- performanceMeasures(
+ytest, pred_test, model.name="test", threshold=threshold)
+perftable <- rbind(trainperf_df, testperf_df)
+pandoc.table(perftable, justify = perf_justify)
+}
+
+plot_roc <- function(predcol1, outcol1, predcol2, outcol2){
+roc_1 <- rocit(score=predcol1, class=outcol1==pos)
+roc_2 <- rocit(score=predcol2, class=outcol2==pos)
+plot(roc_1, col = c("blue","green"), lwd = 3,
+legend = FALSE,YIndex = FALSE, values = TRUE, asp=1)
+lines(roc_2$TPR ~ roc_2$FPR, lwd = 3,
+col = c("red","green"), asp=1)
+legend("bottomright", col = c("blue","red", "green"),
+c("Test Data", "Training Data", "Null Model"), lwd = 2)
+}
+```
+
+### 2.1 Decision Tree
+
+Decision Tree with channel metrics data as predictors.
+
+```{r d tree vp}
+fV1 <- paste(outcome,'>0 ~ ', paste(predict1.columns, collapse=' + '), sep='')
+tmodel_play <- rpart(fV1, data=Train)
+rpart.plot(tmodel_play)
+print(calcAUC(predict(tmodel_play, newdata=Train), Train[,outcome]))
+print(calcAUC(predict(tmodel_play, newdata=Test), Test[,outcome]))
+print(calcAUC(predict(tmodel_play, newdata=Cal), Cal[,outcome]))
+
+pretty_perf_table(tmodel_play, Train[predict1.columns], Train[,outcome]==pos,
+Test[predict1.columns], Test[,outcome]==pos)
+
+plot_roc(predict(tmodel_play, newdata=Test), Test[[outcome]],
+         predict(tmodel_play, newdata=Train), Train[[outcome]])
+```
+
+In this R code snippet, we construct a decision tree model (tmodel_play) for binary classification. We begin by formulating the model to predict a binary outcome based on a specified set of predictor columns, as defined by the predict1.columns variable. Our evaluation process includes visualizing the decision tree structure using rpart.plot. We also assess the model's performance by calculating the area under the ROC curve (AUC) for its predictions on the training, testing, and calibration datasets, utilizing the calcAUC function to gauge its discriminative ability. Additionally, we create a performance table (pretty_perf_table) to summarize key metrics like accuracy, precision, recall, and F1-score, comparing model predictions to actual outcomes on both the training and testing datasets. Lastly, we plot the ROC curve to visually assess the model's capacity to differentiate between positive and negative outcomes in both testing and training data. This code offers a comprehensive approach to evaluating a decision tree model's performance in binary classification, providing insights into its predictive capabilities and generalization potential.
+
+```{r d tree ve}
+fV2 <- paste(outcome,'>0 ~ ', paste(predict2.columns, collapse=' + '), sep='')
+tmodel_earning <- rpart(fV2, data=Train)
+rpart.plot(tmodel_earning)
+print(calcAUC(predict(tmodel_earning, newdata=Train), Train[,outcome]))
+print(calcAUC(predict(tmodel_earning, newdata=Test), Test[,outcome]))
+print(calcAUC(predict(tmodel_earning, newdata=Cal), Cal[,outcome]))
+
+pretty_perf_table(tmodel_earning, Train[predict2.columns], Train[,outcome]==pos,
+Test[predict2.columns], Test[,outcome]==pos)
+
+plot_roc(predict(tmodel_earning, newdata=Test), Test[[outcome]],
+         predict(tmodel_earning, newdata=Train), Train[[outcome]])
+```
+
+In this code, we are performing binary classification using a decision tree model. It appears that we're working with a dataset divided into training, testing, and calibration (Cal) sets. We've constructed a decision tree model (tmodel_earning) to predict a binary outcome based on a set of predictor columns. We then evaluate the model's performance by visualizing the tree structure, calculating the area under the ROC curve (AUC) on the training, testing, and calibration datasets, and generating a performance table. Finally, we plot the ROC curve to visualize the model's ability to discriminate between positive and negative outcomes. This code reflects a comprehensive approach to model evaluation and provides valuable insights into the model's predictive accuracy and its ability to generalize to unseen data. The Prettier Performance Table showed that the precision, recall, and f1 columns are much higher than the "video play" model and the normalized deviance (dev.norm) column is also extremely low. Also the ROC curve still looks good. So this could be a more reasonable result.
+
+### 2.2 Logistic Regression
+
+Logistic Regression with channel metrics variables
+
+```{r logistic vp}
+predict1.columns_log <- c('subscribers', 'video.views', 'uploads', 'created_time')
+fL1 <- paste(outcome, paste(predict1.columns_log, collapse=" + "), sep=" ~ ")
+gmodel_play <- glm(fL1, data=Train, family=binomial(link="logit"))
+print(calcAUC(predict(gmodel_play, newdata=Train), Train[,outcome]))
+print(calcAUC(predict(gmodel_play, newdata=Test), Test[,outcome]))
+print(calcAUC(predict(gmodel_play, newdata=Cal), Cal[,outcome]))
+
+Train$gpred <- predict(gmodel_play, newdata=Train, type="response")
+Test$gpred <- predict(gmodel_play, newdata=Test, type="response")
+
+ggplot(Train, aes(x=gpred, color=as.factor(vv), linetype=as.factor(vv))) + 
+  geom_density(size=1.5) +
+  theme(text=element_text(size=20))
+
+perf <- prediction(Train$gpred, Train$vv)
+precObj <- performance(perf, measure="prec")
+recObj <- performance(perf, measure="rec")
+thresh <- (precObj@x.values)[[1]] # threshold
+precision <- (precObj@y.values)[[1]] # precision
+recall <- (recObj@y.values)[[1]] # recall
+ROCdf <- data.frame(threshold=thresh, precision=precision, recall=recall)
+# Null probability
+pnull <- mean(as.numeric(Train$vv))
+
+p1 <- ggplot(ROCdf, aes(x=threshold)) + geom_line(aes(y=precision/pnull)) +
+coord_cartesian(xlim = c(0,0.05), ylim=c(0,5) ) + labs(y="Enrichment rate")
+p2 <- ggplot(ROCdf, aes(x=threshold)) + geom_line(aes(y=recall)) +
+coord_cartesian(xlim = c(0,0.05))
+grid.arrange(p1, p2, nrow = 2)
+
+plot_roc(predict(gmodel_play, newdata=Test), Test[[outcome]],
+         predict(gmodel_play, newdata=Train), Train[[outcome]])
+```
+
+In this R code, we perform logistic regression for binary classification using a model named gmodel_play. We define a formula fL1 that specifies the outcome variable and a set of predictor columns, and then fit a logistic regression model to the training data.
+
+The code proceeds with several steps for model evaluation:
+
+Calculating and printing the area under the ROC curve (AUC) for the logistic regression model on the training, testing, and calibration datasets using the calcAUC function to assess its discriminative performance. Calculating and storing the predicted probabilities on both the training and testing datasets, which will be used for further analysis. Creating a density plot of the predicted probabilities on the training dataset, color-coded and linetype-differentiated based on the values in the 'vv' variable. Computing precision, recall, and the threshold for classification to evaluate model performance. Plotting two graphs: one displaying the enrichment rate and another showing recall (true positive rate) as a function of the threshold. These provide insights into the model's predictive power. Plotting the ROC curve to visually assess the model's ability to distinguish between positive and negative outcomes in both the testing and training datasets. This code offers a comprehensive analysis of a logistic regression model's performance in binary classification, helping to understand its ability to predict positive outcomes and its sensitivity to varying thresholds.
+
+```{r logistic ve, warning=FALSE}
+fL2 <- paste(outcome, paste(predict2.columns, collapse=" + "), sep=" ~ ")
+gmodel_earning <- glm(fL2, data=Train, family=binomial(link="logit"))
+print(calcAUC(predict(gmodel_earning, newdata=Train), Train[,outcome]))
+print(calcAUC(predict(gmodel_earning, newdata=Test), Test[,outcome]))
+print(calcAUC(predict(gmodel_earning, newdata=Cal), Cal[,outcome]))
+
+Train$gpred <- predict(gmodel_earning, newdata=Train, type="response")
+Test$gpred <- predict(gmodel_earning, newdata=Test, type="response")
+
+ggplot(Train, aes(x=gpred, color=as.factor(vv), linetype=as.factor(vv))) + 
+  geom_density(size=1.5) +
+  theme(text=element_text(size=20))
+
+perf <- prediction(Train$gpred, Train$vv)
+precObj <- performance(perf, measure="prec")
+recObj <- performance(perf, measure="rec")
+thresh <- (precObj@x.values)[[1]] # threshold
+precision <- (precObj@y.values)[[1]] # precision
+recall <- (recObj@y.values)[[1]] # recall
+ROCdf <- data.frame(threshold=thresh, precision=precision, recall=recall)
+# Null probability
+pnull <- mean(as.numeric(Train$vv))
+
+p1 <- ggplot(ROCdf, aes(x=threshold)) + geom_line(aes(y=precision/pnull)) +
+coord_cartesian(xlim = c(0,0.05), ylim=c(0,5) ) + labs(y="Enrichment rate")
+p2 <- ggplot(ROCdf, aes(x=threshold)) + geom_line(aes(y=recall)) +
+coord_cartesian(xlim = c(0,0.05))
+grid.arrange(p1, p2, nrow = 2)
+
+plot_roc(predict(gmodel_earning, newdata=Test), Test[[outcome]],
+         predict(gmodel_earning, newdata=Train), Train[[outcome]])
+```
+
+In this R code snippet, we conduct logistic regression for binary classification using the model named gmodel_earning. We formulate a formula fL2 that defines the outcome variable and a set of predictor columns, and then fit a logistic regression model to the training data.
+
+The code proceeds with several steps for model evaluation:
+
+Calculation and printing of the area under the ROC curve (AUC) for the logistic regression model on the training, testing, and calibration datasets using the calcAUC function to evaluate its discriminative performance. Calculation and storage of the predicted probabilities on both the training and testing datasets, which will be used for further analysis. Creation of a density plot of the predicted probabilities on the training dataset, with color and linetype distinctions based on the values in the 'vv' variable. Computation of precision, recall, and the threshold for classification to assess the model's performance. Plotting two graphs: one displaying the enrichment rate and another showing recall (true positive rate) as a function of the threshold. These visualizations provide insights into the model's predictive capability. Plotting the ROC curve to visually assess the model's ability to distinguish between positive and negative outcomes in both the testing and training datasets. This code offers a comprehensive analysis of a logistic regression model's performance in binary classification, helping understand its ability to predict positive outcomes and its sensitivity to varying thresholds. This model is as effective as the decision tree model. The ROC curve for this model is also similar to the decision tree model.
+
+Plotting ROC curves of four models
+
+```{r 4 mods}
+pred_tplay <- prediction(predict(tmodel_play, newdata=Test), Test[[outcome]])
+pred_gplay <- prediction(predict(gmodel_play, newdata=Test), Test[[outcome]])
+pred_tearn <- prediction(predict(tmodel_earning, newdata=Test), Test[[outcome]])
+pred_pearn <- prediction(predict(gmodel_earning, newdata=Test), Test[[outcome]])
+preds <- list(pred_tplay, pred_gplay, pred_tearn, pred_pearn)
+model.names <- c('decision tree_channel metrics', 'logistic regression_channel metrics', 
+                 'decision tree_earning estimates', 'logistic regression_video earning')
+roc.df <- data.frame()
+for(i in 1:length(model.names)){
+  pred <- preds[[i]]
+  model.name <- model.names[i]
+  perf <- performance( pred, "tpr", "fpr" )
+  roc.df <- rbind(roc.df, data.frame(
+               'fpr'=unlist(perf@x.values),
+               'tpr'=unlist(perf@y.values),
+               'threshold'=unlist(perf@alpha.values),
+               'model'=model.name))
+}
+
+ggplot(roc.df, aes(x=fpr, y=tpr, group=model, color=model))+
+  geom_line(size = 1) +
+  geom_abline(intercept = 0, slope = 1, size = 1, 
+              color = 'green', linetype='dashed') +
+  theme_bw()
+```
+
+In this R code, we compare the performance of four different models for binary classification on the testing dataset. The models include a decision tree based on channel metrics (tmodel_play), a logistic regression model based on channel metrics (gmodel_play), a decision tree model for earning estimates (tmodel_earning), and a logistic regression model for video earnings (gmodel_earning).
+
+The code computes Receiver Operating Characteristic (ROC) curves for each model, using the prediction and performance functions to determine the true positive rate (tpr) and false positive rate (fpr) at different thresholds. The results are then stored in a data frame roc.df, which includes columns for the false positive rate (fpr), true positive rate (tpr), threshold, and model name.
+
+A ggplot visualization is created to display these ROC curves, with each model's performance plotted in a different color. The dashed green line represents the diagonal line where true positive rate equals the false positive rate, serving as a reference line for random guessing. This plot allows for a visual comparison of the models' abilities to discriminate between positive and negative outcomes, with each model's performance uniquely identified by its name.
+
+Overall, this code provides an effective means of comparing the performance of different binary classification models on the testing dataset, helping to identify which model performs best in distinguishing between positive and negative outcomes
+
+## 3.Clustering
+
+### 3.1 Hierarchical Clustering
+
+```{r new dataset}
+youtube2 <- read.csv('Global YouTube Statistics.csv')
+youtube2 <- youtube2[, c('rank', 'category', 'subscribers', 'video.views', 
+                         'video_views_for_the_last_30_days',
+                         'lowest_monthly_earnings', 'highest_monthly_earnings')]
+youtube2 <-filter(youtube2, !is.na(video_views_for_the_last_30_days))   #excluding NA
+
+# replace NA with "other" for category and channel_type columns
+youtube2$category[is.na(youtube2$category)] <- "Other"
+
+
+# replace nan with other" category and channel_type columns
+youtube2$category[youtube2$category == "nan"] <- "Other"
+
+youtube2 <- replaceTopBottomOutliers(youtube2, "highest_monthly_earnings", 0.02, 1)
+youtube2 <- replaceTopBottomOutliers(youtube2, "lowest_monthly_earnings", 0.15, 1)
+youtube2 <- replaceTopBottomOutliers(youtube2, "subscribers", 0, 1)
+youtube2 <- replaceTopBottomOutliers(youtube2, "video.views", 0.02, 1)
+youtube2 <- replaceTopBottomOutliers(youtube2, "video_views_for_the_last_30_days", 0.05, 1)
+```
+
+In this R code snippet, a new dataset called youtube2 is read from a CSV file named 'Global YouTube Statistics.csv.' The dataset is then processed as follows:
+
+A subset of columns, including 'rank,' 'category,' 'subscribers,' 'video.views,' 'video_views_for_the_last_30_days,' 'lowest_monthly_earnings,' and 'highest_monthly_earnings,' is selected for analysis.
+
+Rows containing missing values (NAs) in the 'video_views_for_the_last_30_days' column are filtered out to exclude incomplete data.
+
+The 'category' column is cleaned by replacing missing values with "Other" using multiple assignments, ensuring consistency in category labels.
+
+Outliers in numerical columns ('highest_monthly_earnings,' 'lowest_monthly_earnings,' 'subscribers,' 'video.views,' and 'video_views_for_the_last_30_days') are addressed using the replaceTopBottomOutliers function. This function replaces extreme values in the specified columns with values that are within a specified percentile range (e.g., 2% for 'highest_monthly_earnings' and 15% for 'lowest_monthly_earnings'). This process helps in managing extreme data points that may skew the analysis.
+
+The final processed dataset, youtube2, is printed to the console for further analysis and exploration.
+
+This code is a data preprocessing step to ensure the dataset is clean, consistent, and ready for further statistical or machine learning analysis.
+
+```{r h clustering}
+vars.to.use <- colnames(youtube2)[3:7]
+scaled_df <- scale(youtube2[,vars.to.use])
+
+d <- dist(scaled_df, method="euclidean")
+
+pfit <- hclust(d, method="ward.D2")   # perform hierarchical clustering
+plot(pfit, labels=youtube2$Youtuber, main="Cluster Dendrogram for Youtube data",
+     cex = 0.3, hang = -1)
+```
+
+In this R code, hierarchical clustering is applied to a dataset of YouTube statistics, focusing on variables related to subscribers, video views, and earnings. After standardizing the data to ensure consistent scaling, the code calculates the Euclidean distances between data points and constructs a hierarchical clustering dendrogram using the "ward.D2" linkage method. This dendrogram visually represents the relationships and groupings between YouTubers based on their performance metrics. Such clustering analysis can uncover patterns and similarities within the dataset, aiding in the identification of distinct clusters or segments among YouTube channels based on their statistical attributes.
+
+```{r Finding k}
+# Function to return the squared Euclidean distance of two given points x and y
+sqr_euDist <- function(x, y) {
+sum((x - y)^2)
+}
+
+wss <- function(clustermat) {
+c0 <- colMeans(clustermat)
+sum(apply( clustermat, 1, FUN=function(row) {sqr_euDist(row, c0)} ))
+}
+
+# Function to calculate the total WSS. 
+wss_total <- function(scaled_df, labels) {
+wss.sum <- 0
+k <- length(unique(labels))
+for (i in 1:k)
+wss.sum <- wss.sum + wss(subset(scaled_df, labels == i))
+wss.sum
+}
+
+# Function to calculate total sum of squared (TSS) distance 
+tss <- function(scaled_df) {
+wss(scaled_df)
+}
+
+# Function to return the CH indices
+CH_index <- function(scaled_df, kmax, method="kmeans") {
+if (!(method %in% c("kmeans", "hclust")))
+stop("method must be one of c('kmeans', 'hclust')")
+npts <- nrow(scaled_df)
+wss.value <- numeric(kmax) 
+wss.value[1] <- wss(scaled_df)
+if (method == "kmeans") {
+# kmeans
+for (k in 2:kmax) {
+clustering <- kmeans(scaled_df, k, nstart=10, iter.max=100)
+wss.value[k] <- clustering$tot.withinss
+}
+} else {
+# hclust
+d <- dist(scaled_df, method="euclidean")
+pfit <- hclust(d, method="ward.D2")
+for (k in 2:kmax) {
+labels <- cutree(pfit, k=k)
+wss.value[k] <- wss_total(scaled_df, labels)
+}
+}
+bss.value <- tss(scaled_df) - wss.value # this is a vector
+B <- bss.value / (0:(kmax-1)) # also a vector
+W <- wss.value / (npts - 1:kmax) # also a vector
+data.frame(k = 1:kmax, CH_index = B/W, WSS = wss.value)
+}
+
+# calculate the CH criterion
+crit.df <- CH_index(scaled_df, 10, method="hclust")
+fig1 <- ggplot(crit.df, aes(x=k, y=CH_index)) +
+geom_point() + geom_line(colour="red") +
+scale_x_continuous(breaks=1:10, labels=1:10) +
+labs(y="CH index") + theme(text=element_text(size=20))
+fig2 <- ggplot(crit.df, aes(x=k, y=WSS), color="blue") +
+geom_point() + geom_line(colour="blue") +
+scale_x_continuous(breaks=1:10, labels=1:10) +
+theme(text=element_text(size=20))
+
+grid.arrange(fig1, fig2, nrow=1)
+```
+
+This R code is designed to find the optimal number of clusters (k) for a clustering algorithm by employing the CH (Calinski-Harabasz) index and within-cluster sum of squares (WSS). It begins by defining functions to calculate the squared Euclidean distance between data points and to determine the WSS and TSS (total sum of squares) for different cluster scenarios. The CH_index function then evaluates a range of potential k values, utilizing the WSS and TSS to calculate the CH index. Two plots are generated for visual analysis: one depicting the CH index and another illustrating the WSS. The CH index provides a measure of clustering quality, while the elbow point in the WSS plot indicates the point at which adding more clusters ceases to yield significant improvement. By considering these metrics, this code assists in making an informed decision regarding the appropriate number of clusters, balancing the trade-off between clustering quality and model complexity, which is crucial in various data analysis and machine learning tasks.
+
+```{r Grouping interpretation}
+print_clusters <- function(df, groups, cols_to_print, max_rows = 10) {
+  Ngroups <- max(groups)
+  for (i in 1:Ngroups) {
+    print(paste("cluster", i))
+    df_cluster <- df[groups == i, cols_to_print]
+    if (nrow(df_cluster) > max_rows) {
+      print(df_cluster[1:max_rows, ])
+      print(paste("... and", nrow(df_cluster) - max_rows, "more rows"))
+    } else {
+      print(df_cluster)
+    }
+  }
+}
+groups <- cutree(pfit, k=7)
+cols_to_print <- c('category', 'subscribers', 'video_views_for_the_last_30_days')
+print_clusters(youtube2, groups, cols_to_print, max_rows = 10)
+```
+
+In this R code, the print_clusters function is defined to interpret and print the contents of clusters within a dataset. It takes as input the dataset (df), a vector of cluster assignments (groups), a list of columns to print (cols_to_print), and an optional parameter for limiting the maximum number of rows per cluster (max_rows). The code utilizes the cutree function to assign data points to clusters based on the hierarchical clustering results generated earlier. For each cluster, the function prints the specified columns for a maximum of max_rows rows, offering a concise yet informative overview of the cluster's characteristics. This code is invaluable for interpreting and understanding the contents of clusters, making it easier to extract insights and identify patterns within complex datasets, which is a fundamental step in various data analysis and segmentation tasks
+
+```{r Visualising Clusters}
+fviz_cluster(list(data = scaled_df, cluster = groups),
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+```
+
+By visualizing clusters we can observe the clustering results more easily. The results shown in the graphic are consistent with our analysis above, although some features are more clearly shown. For example, cluster 1 is located in the upper left corner of the graph, which is composed of group that mostly have huge number of subscribers and video views for a short period.
+
+### 3.2 kMeans Clustering
+
+```{r  picking k}
+kmClustering.ch <- kmeansruns(scaled_df, krange=1:10, criterion="ch")
+kmClustering.asw <- kmeansruns(scaled_df, krange=1:10, criterion="asw")
+
+kmCritframe <- data.frame(k=1:10, ch=kmClustering.ch$crit,
+asw=kmClustering.asw$crit)
+fig1 <- ggplot(kmCritframe, aes(x=k, y=ch)) +
+geom_point() + geom_line(colour="red") +
+scale_x_continuous(breaks=1:10, labels=1:10) +
+labs(y="CH index") + theme(text=element_text(size=20))
+fig2 <- ggplot(kmCritframe, aes(x=k, y=asw)) +
+geom_point() + geom_line(colour="blue") +
+scale_x_continuous(breaks=1:10, labels=1:10) +
+labs(y="ASW") + theme(text=element_text(size=20))
+grid.arrange(fig1, fig2, nrow=1)
+```
+
+From the result of CH index, we saw that the CH criterion is maximized at k = 9, with another local maximum at k = 2. We checked both 2 and 9 numbers of groups for clustering.
+
+```{r k mean}
+kmClusters1 <- kmeans(scaled_df, 2, nstart=100, iter.max=100)
+kmClusters2 <- kmeans(scaled_df, 9, nstart=100, iter.max=100)
+
+# Create a data frame to store the cluster assignments and original data
+clustered_data <- data.frame(Cluster = kmClusters2$cluster, scaled_df)
+
+# Create an empty list to store the data frames for each cluster
+cluster_data_list <- list()
+
+# Loop through each cluster and extract 10 rows of data for each
+for (cluster_num in 1:9) {
+  cluster_data <- clustered_data[clustered_data$Cluster == cluster_num, ]
+  cluster_data_list[[cluster_num]] <- head(cluster_data, 10)
+}
+
+# Print the first 10 rows of each cluster
+for (cluster_num in 1:9) {
+  cat(paste("Cluster ", cluster_num, ":\n"))
+  print(cluster_data_list[[cluster_num]])
+}
+```
+
+```{r Visualisation kmeans}
+fviz_cluster(kmClusters1, data = scaled_df,
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+fviz_cluster(kmClusters2, data = scaled_df,
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             )
+```
+
+First, from the result of two groups of clustering, we can see that the vast majority are clustered in cluster 2. This suggests that the vast majority of channels have a moderate number of subscribers and a lower number of video views during a short period. Then, when we checked the result of ten groups of clustering, it is quite close to hierarchical clustering, where it is also clear that cluster 1 is in the upper left corner of the graph. However, since this cluster has ten groups, some smaller groups are further clustered on the right side.
+
+## 4.Conclusion
+
+We studied YouTube data to find patterns that could help us understand what influences video views. In our study, the decision tree and logistic regression models were applied using two sets of predictor variables: channel metrics and earnings estimates. The models using earnings estimates consistently outperformed those using channel metrics, we discovered that earnings estimates are a strong predictor of video views. Visualizing the clusters confirmed these findings and provided a clearer view of the distinct characteristics of each cluster. For example, Cluster 1 mainly had channels with a lot of subscribers and recent videos with high views. Our study gives useful information for content creators and marketers who want to understand what drives video views. We found that the number of subscribers is a key factor in predicting video views. Our analyzation also showed different groups of channels based on their success metrics. While our findings are helpful, more research could make our predictions even more accurate. Since YouTube is always changing and new content trends are emerging, it's an interesting area for further study and analysis.
